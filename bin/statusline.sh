@@ -22,6 +22,16 @@ reset='\033[0m'
 
 sep=" ${dim}│${reset} "
 
+# ── Config ──────────────────────────────────────────────
+context_warn_pct=${CLAUDE_STATUSLINE_CONTEXT_WARN_PCT:-50}
+context_mid_pct=${CLAUDE_STATUSLINE_CONTEXT_MID_PCT:-70}
+context_crit_pct=${CLAUDE_STATUSLINE_CONTEXT_CRIT_PCT:-90}
+cache_max_age=${CLAUDE_STATUSLINE_CACHE_MAX_AGE:-60}
+show_api_status=${CLAUDE_STATUSLINE_SHOW_API_STATUS:-false}
+show_cli_version=${CLAUDE_STATUSLINE_SHOW_CLI_VERSION:-true}
+check_cli_updates=${CLAUDE_STATUSLINE_CHECK_UPDATES:-true}
+cli_update_check_max_age=${CLAUDE_STATUSLINE_UPDATE_CACHE_MAX_AGE:-43200}
+
 # ── Helpers ─────────────────────────────────────────────
 format_tokens() {
     local num=$1
@@ -36,9 +46,9 @@ format_tokens() {
 
 color_for_pct() {
     local pct=$1
-    if [ "$pct" -ge 90 ]; then printf "$red"
-    elif [ "$pct" -ge 70 ]; then printf "$yellow"
-    elif [ "$pct" -ge 50 ]; then printf "$orange"
+    if [ "$pct" -ge "$context_crit_pct" ]; then printf "$red"
+    elif [ "$pct" -ge "$context_mid_pct" ]; then printf "$yellow"
+    elif [ "$pct" -ge "$context_warn_pct" ]; then printf "$orange"
     else printf "$green"
     fi
 }
@@ -115,6 +125,85 @@ format_reset_time() {
     esac
 }
 
+format_relative_time() {
+    local epoch="$1"
+    [ -z "$epoch" ] && return
+
+    local now diff
+    now=$(date +%s)
+    diff=$(( epoch - now ))
+
+    if [ "$diff" -le 0 ]; then
+        printf "now"
+        return
+    fi
+
+    if [ "$diff" -ge 86400 ]; then
+        printf "in %dd" "$(( diff / 86400 ))"
+    elif [ "$diff" -ge 3600 ]; then
+        printf "in %dh %dm" "$(( diff / 3600 ))" "$(( (diff % 3600) / 60 ))"
+    elif [ "$diff" -ge 60 ]; then
+        printf "in %dm" "$(( diff / 60 ))"
+    else
+        printf "in %ds" "$diff"
+    fi
+}
+
+extract_semver() {
+    local text="$1"
+    echo "$text" | sed -n 's/.*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n1
+}
+
+semver_gt() {
+    local a="$1"
+    local b="$2"
+    [ -z "$a" ] || [ -z "$b" ] && return 1
+
+    awk -v a="$a" -v b="$b" 'BEGIN {
+        split(a, A, ".");
+        split(b, B, ".");
+        for (i = 1; i <= 3; i++) {
+            ai = (A[i] == "" ? 0 : A[i]) + 0;
+            bi = (B[i] == "" ? 0 : B[i]) + 0;
+            if (ai > bi) exit 0;
+            if (ai < bi) exit 1;
+        }
+        exit 1;
+    }'
+}
+
+get_claude_code_version() {
+    local raw=""
+    local version=""
+
+    if [ -n "$CLAUDE_CODE_VERSION" ]; then
+        echo "$CLAUDE_CODE_VERSION"
+        return 0
+    fi
+
+    if command -v claude >/dev/null 2>&1; then
+        raw=$(claude --version 2>/dev/null | head -n1)
+        [ -z "$raw" ] && raw=$(claude -v 2>/dev/null | head -n1)
+        [ -z "$raw" ] && return 1
+
+        version=$(extract_semver "$raw")
+        if [ -n "$version" ]; then
+            echo "$version"
+        else
+            echo "$raw"
+        fi
+        return 0
+    fi
+
+    return 1
+}
+
+get_latest_claude_code_version() {
+    if command -v npm >/dev/null 2>&1; then
+        timeout 3 npm view @anthropic-ai/claude-code version 2>/dev/null | head -n1
+    fi
+}
+
 # ── Extract JSON data ───────────────────────────────────
 model_name=$(echo "$input" | jq -r '.model.display_name // "Claude"')
 
@@ -157,6 +246,19 @@ if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     fi
 fi
 
+git_ahead=""
+git_behind=""
+if [ -n "$git_branch" ]; then
+    upstream_ref=$(git -C "$cwd" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)
+    if [ -n "$upstream_ref" ]; then
+        ahead_behind=$(git -C "$cwd" rev-list --left-right --count "${upstream_ref}...HEAD" 2>/dev/null)
+        if [ -n "$ahead_behind" ]; then
+            git_behind=$(echo "$ahead_behind" | awk '{print $1}')
+            git_ahead=$(echo "$ahead_behind" | awk '{print $2}')
+        fi
+    fi
+fi
+
 session_duration=""
 session_start=$(echo "$input" | jq -r '.session.start_time // empty')
 if [ -n "$session_start" ] && [ "$session_start" != "null" ]; then
@@ -181,6 +283,12 @@ line1+="${sep}"
 line1+="${cyan}${dirname}${reset}"
 if [ -n "$git_branch" ]; then
     line1+=" ${green}(${git_branch}${red}${git_dirty}${green})${reset}"
+    if [ -n "$git_ahead" ] && [ "$git_ahead" -gt 0 ] 2>/dev/null; then
+        line1+=" ${yellow}↑${git_ahead}${reset}"
+    fi
+    if [ -n "$git_behind" ] && [ "$git_behind" -gt 0 ] 2>/dev/null; then
+        line1+=" ${orange}↓${git_behind}${reset}"
+    fi
 fi
 if [ -n "$session_duration" ]; then
     line1+="${sep}"
@@ -191,6 +299,40 @@ if $thinking_on; then
     line1+="${magenta}◐ thinking${reset}"
 else
     line1+="${dim}◑ thinking${reset}"
+fi
+
+if [ "$show_cli_version" = "true" ]; then
+    cli_version=$(get_claude_code_version)
+    if [ -n "$cli_version" ]; then
+        line1+="${sep}${white}cc ${cli_version}${reset}"
+
+        if [ "$check_cli_updates" = "true" ]; then
+            version_cache_file="/tmp/claude/statusline-version-cache.json"
+            mkdir -p /tmp/claude
+
+            latest_version=""
+            if [ -f "$version_cache_file" ]; then
+                version_cache_mtime=$(stat -c %Y "$version_cache_file" 2>/dev/null || stat -f %m "$version_cache_file" 2>/dev/null)
+                now=$(date +%s)
+                version_cache_age=$(( now - version_cache_mtime ))
+                if [ "$version_cache_age" -lt "$cli_update_check_max_age" ]; then
+                    latest_version=$(jq -r '.latest // empty' "$version_cache_file" 2>/dev/null)
+                fi
+            fi
+
+            if [ -z "$latest_version" ]; then
+                fetched_latest=$(get_latest_claude_code_version)
+                latest_version=$(extract_semver "$fetched_latest")
+                if [ -n "$latest_version" ]; then
+                    printf '{"latest":"%s"}\n' "$latest_version" > "$version_cache_file"
+                fi
+            fi
+
+            if semver_gt "$latest_version" "$cli_version"; then
+                line1+=" ${yellow}⇪ ${latest_version}${reset}"
+            fi
+        fi
+    fi
 fi
 
 # ── OAuth token resolution ──────────────────────────────
@@ -240,11 +382,11 @@ get_oauth_token() {
 
 # ── Fetch usage data (cached) ──────────────────────────
 cache_file="/tmp/claude/statusline-usage-cache.json"
-cache_max_age=60
 mkdir -p /tmp/claude
 
 needs_refresh=true
 usage_data=""
+cache_is_stale=false
 
 if [ -f "$cache_file" ]; then
     cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
@@ -253,6 +395,7 @@ if [ -f "$cache_file" ]; then
     if [ "$cache_age" -lt "$cache_max_age" ]; then
         needs_refresh=false
         usage_data=$(cat "$cache_file" 2>/dev/null)
+        cache_is_stale=true
     fi
 fi
 
@@ -285,20 +428,24 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
     five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
     five_hour_reset=$(format_reset_time "$five_hour_reset_iso" "time")
+    five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
+    five_hour_rel=$(format_relative_time "$five_hour_reset_epoch")
     five_hour_bar=$(build_bar "$five_hour_pct" "$bar_width")
     five_hour_pct_color=$(color_for_pct "$five_hour_pct")
     five_hour_pct_fmt=$(printf "%3d" "$five_hour_pct")
 
-    rate_lines+="${white}current${reset} ${five_hour_bar} ${five_hour_pct_color}${five_hour_pct_fmt}%${reset} ${dim}⟳${reset} ${white}${five_hour_reset}${reset}"
+    rate_lines+="${white}current${reset} ${five_hour_bar} ${five_hour_pct_color}${five_hour_pct_fmt}%${reset} ${dim}⟳${reset} ${white}${five_hour_reset}${reset} ${dim}(${five_hour_rel})${reset}"
 
     seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
     seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
     seven_day_reset=$(format_reset_time "$seven_day_reset_iso" "datetime")
+    seven_day_reset_epoch=$(iso_to_epoch "$seven_day_reset_iso")
+    seven_day_rel=$(format_relative_time "$seven_day_reset_epoch")
     seven_day_bar=$(build_bar "$seven_day_pct" "$bar_width")
     seven_day_pct_color=$(color_for_pct "$seven_day_pct")
     seven_day_pct_fmt=$(printf "%3d" "$seven_day_pct")
 
-    rate_lines+="\n${white}weekly${reset}  ${seven_day_bar} ${seven_day_pct_color}${seven_day_pct_fmt}%${reset} ${dim}⟳${reset} ${white}${seven_day_reset}${reset}"
+    rate_lines+="\n${white}weekly${reset}  ${seven_day_bar} ${seven_day_pct_color}${seven_day_pct_fmt}%${reset} ${dim}⟳${reset} ${white}${seven_day_reset}${reset} ${dim}(${seven_day_rel})${reset}"
 
     extra_enabled=$(echo "$usage_data" | jq -r '.extra_usage.is_enabled // false')
     if [ "$extra_enabled" = "true" ]; then
@@ -318,6 +465,16 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
         rate_lines+="\n${extra_col}"
         rate_lines+="\n${extra_reset_line}"
     fi
+fi
+
+if [ "$show_api_status" = "true" ] && [ -n "$usage_data" ]; then
+    usage_status=""
+    if $cache_is_stale; then
+        usage_status="${orange}api: stale${reset}"
+    else
+        usage_status="${green}api: live${reset}"
+    fi
+    line1+="${sep}${usage_status}"
 fi
 
 # ── Output ──────────────────────────────────────────────
