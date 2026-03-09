@@ -28,6 +28,16 @@ context_mid_pct=${CLAUDE_STATUSLINE_CONTEXT_MID_PCT:-70}
 context_crit_pct=${CLAUDE_STATUSLINE_CONTEXT_CRIT_PCT:-90}
 cache_max_age=${CLAUDE_STATUSLINE_CACHE_MAX_AGE:-60}
 
+# ── Config ──────────────────────────────────────────────
+context_warn_pct=${CLAUDE_STATUSLINE_CONTEXT_WARN_PCT:-50}
+context_mid_pct=${CLAUDE_STATUSLINE_CONTEXT_MID_PCT:-70}
+context_crit_pct=${CLAUDE_STATUSLINE_CONTEXT_CRIT_PCT:-90}
+cache_max_age=${CLAUDE_STATUSLINE_CACHE_MAX_AGE:-60}
+show_api_status=${CLAUDE_STATUSLINE_SHOW_API_STATUS:-false}
+show_cli_version=${CLAUDE_STATUSLINE_SHOW_CLI_VERSION:-true}
+check_cli_updates=${CLAUDE_STATUSLINE_CHECK_UPDATES:-true}
+cli_update_check_max_age=${CLAUDE_STATUSLINE_UPDATE_CACHE_MAX_AGE:-43200}
+
 # ── Helpers ─────────────────────────────────────────────
 format_tokens() {
     local num=$1
@@ -119,30 +129,6 @@ format_reset_time() {
             date -d "@$epoch" +"%b %-d" 2>/dev/null
             ;;
     esac
-}
-
-format_relative_time() {
-    local epoch="$1"
-    [ -z "$epoch" ] && return
-
-    local now diff
-    now=$(date +%s)
-    diff=$(( epoch - now ))
-
-    if [ "$diff" -le 0 ]; then
-        printf "now"
-        return
-    fi
-
-    if [ "$diff" -ge 86400 ]; then
-        printf "in %dd" "$(( diff / 86400 ))"
-    elif [ "$diff" -ge 3600 ]; then
-        printf "in %dh %dm" "$(( diff / 3600 ))" "$(( (diff % 3600) / 60 ))"
-    elif [ "$diff" -ge 60 ]; then
-        printf "in %dm" "$(( diff / 60 ))"
-    else
-        printf "in %ds" "$diff"
-    fi
 }
 
 # ── Extract JSON data ───────────────────────────────────
@@ -240,6 +226,40 @@ if $thinking_on; then
     line1+="${magenta}◐ thinking${reset}"
 else
     line1+="${dim}◑ thinking${reset}"
+fi
+
+if [ "$show_cli_version" = "true" ]; then
+    cli_version=$(get_claude_code_version)
+    if [ -n "$cli_version" ]; then
+        line1+="${sep}${white}cc ${cli_version}${reset}"
+
+        if [ "$check_cli_updates" = "true" ]; then
+            version_cache_file="/tmp/claude/statusline-version-cache.json"
+            mkdir -p /tmp/claude
+
+            latest_version=""
+            if [ -f "$version_cache_file" ]; then
+                version_cache_mtime=$(stat -c %Y "$version_cache_file" 2>/dev/null || stat -f %m "$version_cache_file" 2>/dev/null)
+                now=$(date +%s)
+                version_cache_age=$(( now - version_cache_mtime ))
+                if [ "$version_cache_age" -lt "$cli_update_check_max_age" ]; then
+                    latest_version=$(jq -r '.latest // empty' "$version_cache_file" 2>/dev/null)
+                fi
+            fi
+
+            if [ -z "$latest_version" ]; then
+                fetched_latest=$(get_latest_claude_code_version)
+                latest_version=$(extract_semver "$fetched_latest")
+                if [ -n "$latest_version" ]; then
+                    printf '{"latest":"%s"}\n' "$latest_version" > "$version_cache_file"
+                fi
+            fi
+
+            if semver_gt "$latest_version" "$cli_version"; then
+                line1+=" ${yellow}⇪ ${latest_version}${reset}"
+            fi
+        fi
+    fi
 fi
 
 # ── OAuth token resolution ──────────────────────────────
@@ -372,16 +392,6 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
         rate_lines+="\n${extra_col}"
         rate_lines+="\n${extra_reset_line}"
     fi
-fi
-
-if [ -n "$usage_data" ]; then
-    usage_status=""
-    if $cache_is_stale; then
-        usage_status="${orange}api: stale${reset}"
-    else
-        usage_status="${green}api: live${reset}"
-    fi
-    line1+="${sep}${usage_status}"
 fi
 
 # ── Output ──────────────────────────────────────────────
