@@ -22,6 +22,12 @@ reset='\033[0m'
 
 sep=" ${dim}│${reset} "
 
+# ── Config ──────────────────────────────────────────────
+context_warn_pct=${CLAUDE_STATUSLINE_CONTEXT_WARN_PCT:-50}
+context_mid_pct=${CLAUDE_STATUSLINE_CONTEXT_MID_PCT:-70}
+context_crit_pct=${CLAUDE_STATUSLINE_CONTEXT_CRIT_PCT:-90}
+cache_max_age=${CLAUDE_STATUSLINE_CACHE_MAX_AGE:-60}
+
 # ── Helpers ─────────────────────────────────────────────
 format_tokens() {
     local num=$1
@@ -36,9 +42,9 @@ format_tokens() {
 
 color_for_pct() {
     local pct=$1
-    if [ "$pct" -ge 90 ]; then printf "$red"
-    elif [ "$pct" -ge 70 ]; then printf "$yellow"
-    elif [ "$pct" -ge 50 ]; then printf "$orange"
+    if [ "$pct" -ge "$context_crit_pct" ]; then printf "$red"
+    elif [ "$pct" -ge "$context_mid_pct" ]; then printf "$yellow"
+    elif [ "$pct" -ge "$context_warn_pct" ]; then printf "$orange"
     else printf "$green"
     fi
 }
@@ -115,6 +121,30 @@ format_reset_time() {
     esac
 }
 
+format_relative_time() {
+    local epoch="$1"
+    [ -z "$epoch" ] && return
+
+    local now diff
+    now=$(date +%s)
+    diff=$(( epoch - now ))
+
+    if [ "$diff" -le 0 ]; then
+        printf "now"
+        return
+    fi
+
+    if [ "$diff" -ge 86400 ]; then
+        printf "in %dd" "$(( diff / 86400 ))"
+    elif [ "$diff" -ge 3600 ]; then
+        printf "in %dh %dm" "$(( diff / 3600 ))" "$(( (diff % 3600) / 60 ))"
+    elif [ "$diff" -ge 60 ]; then
+        printf "in %dm" "$(( diff / 60 ))"
+    else
+        printf "in %ds" "$diff"
+    fi
+}
+
 # ── Extract JSON data ───────────────────────────────────
 model_name=$(echo "$input" | jq -r '.model.display_name // "Claude"')
 
@@ -157,6 +187,19 @@ if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     fi
 fi
 
+git_ahead=""
+git_behind=""
+if [ -n "$git_branch" ]; then
+    upstream_ref=$(git -C "$cwd" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)
+    if [ -n "$upstream_ref" ]; then
+        ahead_behind=$(git -C "$cwd" rev-list --left-right --count "${upstream_ref}...HEAD" 2>/dev/null)
+        if [ -n "$ahead_behind" ]; then
+            git_behind=$(echo "$ahead_behind" | awk '{print $1}')
+            git_ahead=$(echo "$ahead_behind" | awk '{print $2}')
+        fi
+    fi
+fi
+
 session_duration=""
 session_start=$(echo "$input" | jq -r '.session.start_time // empty')
 if [ -n "$session_start" ] && [ "$session_start" != "null" ]; then
@@ -181,6 +224,12 @@ line1+="${sep}"
 line1+="${cyan}${dirname}${reset}"
 if [ -n "$git_branch" ]; then
     line1+=" ${green}(${git_branch}${red}${git_dirty}${green})${reset}"
+    if [ -n "$git_ahead" ] && [ "$git_ahead" -gt 0 ] 2>/dev/null; then
+        line1+=" ${yellow}↑${git_ahead}${reset}"
+    fi
+    if [ -n "$git_behind" ] && [ "$git_behind" -gt 0 ] 2>/dev/null; then
+        line1+=" ${orange}↓${git_behind}${reset}"
+    fi
 fi
 if [ -n "$session_duration" ]; then
     line1+="${sep}"
@@ -240,11 +289,11 @@ get_oauth_token() {
 
 # ── Fetch usage data (cached) ──────────────────────────
 cache_file="/tmp/claude/statusline-usage-cache.json"
-cache_max_age=60
 mkdir -p /tmp/claude
 
 needs_refresh=true
 usage_data=""
+cache_is_stale=false
 
 if [ -f "$cache_file" ]; then
     cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
@@ -253,6 +302,7 @@ if [ -f "$cache_file" ]; then
     if [ "$cache_age" -lt "$cache_max_age" ]; then
         needs_refresh=false
         usage_data=$(cat "$cache_file" 2>/dev/null)
+        cache_is_stale=true
     fi
 fi
 
@@ -285,20 +335,24 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
     five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
     five_hour_reset=$(format_reset_time "$five_hour_reset_iso" "time")
+    five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
+    five_hour_rel=$(format_relative_time "$five_hour_reset_epoch")
     five_hour_bar=$(build_bar "$five_hour_pct" "$bar_width")
     five_hour_pct_color=$(color_for_pct "$five_hour_pct")
     five_hour_pct_fmt=$(printf "%3d" "$five_hour_pct")
 
-    rate_lines+="${white}current${reset} ${five_hour_bar} ${five_hour_pct_color}${five_hour_pct_fmt}%${reset} ${dim}⟳${reset} ${white}${five_hour_reset}${reset}"
+    rate_lines+="${white}current${reset} ${five_hour_bar} ${five_hour_pct_color}${five_hour_pct_fmt}%${reset} ${dim}⟳${reset} ${white}${five_hour_reset}${reset} ${dim}(${five_hour_rel})${reset}"
 
     seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
     seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
     seven_day_reset=$(format_reset_time "$seven_day_reset_iso" "datetime")
+    seven_day_reset_epoch=$(iso_to_epoch "$seven_day_reset_iso")
+    seven_day_rel=$(format_relative_time "$seven_day_reset_epoch")
     seven_day_bar=$(build_bar "$seven_day_pct" "$bar_width")
     seven_day_pct_color=$(color_for_pct "$seven_day_pct")
     seven_day_pct_fmt=$(printf "%3d" "$seven_day_pct")
 
-    rate_lines+="\n${white}weekly${reset}  ${seven_day_bar} ${seven_day_pct_color}${seven_day_pct_fmt}%${reset} ${dim}⟳${reset} ${white}${seven_day_reset}${reset}"
+    rate_lines+="\n${white}weekly${reset}  ${seven_day_bar} ${seven_day_pct_color}${seven_day_pct_fmt}%${reset} ${dim}⟳${reset} ${white}${seven_day_reset}${reset} ${dim}(${seven_day_rel})${reset}"
 
     extra_enabled=$(echo "$usage_data" | jq -r '.extra_usage.is_enabled // false')
     if [ "$extra_enabled" = "true" ]; then
@@ -318,6 +372,16 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
         rate_lines+="\n${extra_col}"
         rate_lines+="\n${extra_reset_line}"
     fi
+fi
+
+if [ -n "$usage_data" ]; then
+    usage_status=""
+    if $cache_is_stale; then
+        usage_status="${orange}api: stale${reset}"
+    else
+        usage_status="${green}api: live${reset}"
+    fi
+    line1+="${sep}${usage_status}"
 fi
 
 # ── Output ──────────────────────────────────────────────

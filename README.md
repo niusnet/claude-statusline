@@ -14,6 +14,23 @@ npx @kamranahmedse/claude-statusline
 
 It backups your old status line if any and copies the status line script to `~/.claude/statusline.sh` and configures your Claude Code settings.
 
+## Extras included
+
+- Git ahead/behind indicators (`↑`/`↓`) when your branch has an upstream
+- API freshness status (`api: live` / `api: stale`) for usage data
+- Relative reset times (e.g. `in 1h 20m`) next to absolute reset times
+
+## Optional environment variables
+
+Tune thresholds and cache behavior:
+
+```bash
+export CLAUDE_STATUSLINE_CONTEXT_WARN_PCT=50
+export CLAUDE_STATUSLINE_CONTEXT_MID_PCT=70
+export CLAUDE_STATUSLINE_CONTEXT_CRIT_PCT=90
+export CLAUDE_STATUSLINE_CACHE_MAX_AGE=60
+```
+
 ## Requirements
 
 - [jq](https://jqlang.github.io/jq/) — for parsing JSON
