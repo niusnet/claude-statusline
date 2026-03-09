@@ -73,6 +73,12 @@ function getStatusLineCommand() {
   return 'bash "$HOME/.claude/statusline.sh"';
 }
 
+function installStatusline() {
+  const statusline = fs.readFileSync(STATUSLINE_SRC, "utf-8").replace(/\r\n/g, "\n");
+  fs.writeFileSync(STATUSLINE_DEST, statusline, "utf-8");
+  fs.chmodSync(STATUSLINE_DEST, 0o755);
+}
+
 function uninstall() {
   console.log();
   console.log(`  ${blue}Claude Line Uninstaller${reset}`);
@@ -150,8 +156,7 @@ function run() {
     warn(`Backed up existing statusline to ${dim}statusline.sh.bak${reset}`);
   }
 
-  fs.copyFileSync(STATUSLINE_SRC, STATUSLINE_DEST);
-  fs.chmodSync(STATUSLINE_DEST, 0o755);
+  installStatusline();
   success(`Installed statusline to ${dim}${STATUSLINE_DEST}${reset}`);
 
   let settings = {};

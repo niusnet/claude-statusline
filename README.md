@@ -41,8 +41,6 @@ Notes:
 - `CLAUDE_STATUSLINE_SHOW_API_STATUS` is off by default to avoid confusion in plans where API freshness is not useful.
 - Update checks query npm and are cached (12h by default).
 
-```
-
 ## Requirements
 
 - [jq](https://jqlang.github.io/jq/) — for parsing JSON

@@ -8,7 +8,7 @@ if [ -z "$input" ]; then
     exit 0
 fi
 
-# ── Colors ──────────────────────────────────────────────
+# Colors
 blue='\033[38;2;0;153;255m'
 orange='\033[38;2;255;176;85m'
 green='\033[38;2;0;175;80m'
@@ -22,13 +22,7 @@ reset='\033[0m'
 
 sep=" ${dim}│${reset} "
 
-# ── Config ──────────────────────────────────────────────
-context_warn_pct=${CLAUDE_STATUSLINE_CONTEXT_WARN_PCT:-50}
-context_mid_pct=${CLAUDE_STATUSLINE_CONTEXT_MID_PCT:-70}
-context_crit_pct=${CLAUDE_STATUSLINE_CONTEXT_CRIT_PCT:-90}
-cache_max_age=${CLAUDE_STATUSLINE_CACHE_MAX_AGE:-60}
-
-# ── Config ──────────────────────────────────────────────
+# Config
 context_warn_pct=${CLAUDE_STATUSLINE_CONTEXT_WARN_PCT:-50}
 context_mid_pct=${CLAUDE_STATUSLINE_CONTEXT_MID_PCT:-70}
 context_crit_pct=${CLAUDE_STATUSLINE_CONTEXT_CRIT_PCT:-90}
@@ -38,7 +32,7 @@ show_cli_version=${CLAUDE_STATUSLINE_SHOW_CLI_VERSION:-true}
 check_cli_updates=${CLAUDE_STATUSLINE_CHECK_UPDATES:-true}
 cli_update_check_max_age=${CLAUDE_STATUSLINE_UPDATE_CACHE_MAX_AGE:-43200}
 
-# ── Helpers ─────────────────────────────────────────────
+# Helpers
 format_tokens() {
     local num=$1
     if [ "$num" -ge 1000000 ]; then
@@ -52,10 +46,10 @@ format_tokens() {
 
 color_for_pct() {
     local pct=$1
-    if [ "$pct" -ge "$context_crit_pct" ]; then printf "$red"
-    elif [ "$pct" -ge "$context_mid_pct" ]; then printf "$yellow"
-    elif [ "$pct" -ge "$context_warn_pct" ]; then printf "$orange"
-    else printf "$green"
+    if [ "$pct" -ge "$context_crit_pct" ]; then printf "%b" "$red"
+    elif [ "$pct" -ge "$context_mid_pct" ]; then printf "%b" "$yellow"
+    elif [ "$pct" -ge "$context_warn_pct" ]; then printf "%b" "$orange"
+    else printf "%b" "$green"
     fi
 }
 
@@ -74,7 +68,7 @@ build_bar() {
     for ((i=0; i<filled; i++)); do filled_str+="●"; done
     for ((i=0; i<empty; i++)); do empty_str+="○"; done
 
-    printf "${bar_color}${filled_str}${dim}${empty_str}${reset}"
+    printf "%b" "${bar_color}${filled_str}${dim}${empty_str}${reset}"
 }
 
 iso_to_epoch() {
@@ -131,7 +125,86 @@ format_reset_time() {
     esac
 }
 
-# ── Extract JSON data ───────────────────────────────────
+format_relative_time() {
+    local epoch="$1"
+    [ -z "$epoch" ] && return
+
+    local now diff
+    now=$(date +%s)
+    diff=$(( epoch - now ))
+
+    if [ "$diff" -le 0 ]; then
+        printf "now"
+        return
+    fi
+
+    if [ "$diff" -ge 86400 ]; then
+        printf "in %dd" "$(( diff / 86400 ))"
+    elif [ "$diff" -ge 3600 ]; then
+        printf "in %dh %dm" "$(( diff / 3600 ))" "$(( (diff % 3600) / 60 ))"
+    elif [ "$diff" -ge 60 ]; then
+        printf "in %dm" "$(( diff / 60 ))"
+    else
+        printf "in %ds" "$diff"
+    fi
+}
+
+extract_semver() {
+    local text="$1"
+    echo "$text" | sed -n 's/.*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n1
+}
+
+semver_gt() {
+    local a="$1"
+    local b="$2"
+    [ -z "$a" ] || [ -z "$b" ] && return 1
+
+    awk -v a="$a" -v b="$b" 'BEGIN {
+        split(a, A, ".");
+        split(b, B, ".");
+        for (i = 1; i <= 3; i++) {
+            ai = (A[i] == "" ? 0 : A[i]) + 0;
+            bi = (B[i] == "" ? 0 : B[i]) + 0;
+            if (ai > bi) exit 0;
+            if (ai < bi) exit 1;
+        }
+        exit 1;
+    }'
+}
+
+get_claude_code_version() {
+    local raw=""
+    local version=""
+
+    if [ -n "$CLAUDE_CODE_VERSION" ]; then
+        echo "$CLAUDE_CODE_VERSION"
+        return 0
+    fi
+
+    if command -v claude >/dev/null 2>&1; then
+        raw=$(claude --version 2>/dev/null | head -n1)
+        [ -z "$raw" ] && raw=$(claude -v 2>/dev/null | head -n1)
+        [ -z "$raw" ] && return 1
+
+        version=$(extract_semver "$raw")
+        if [ -n "$version" ]; then
+            echo "$version"
+        else
+            echo "$raw"
+        fi
+        return 0
+    fi
+
+    return 1
+}
+
+get_latest_claude_code_version() {
+    if command -v npm >/dev/null 2>&1; then
+        timeout 3 npm view @anthropic-ai/claude-code version 2>/dev/null | head -n1
+    fi
+}
+
+# Extract JSON data
 model_name=$(echo "$input" | jq -r '.model.display_name // "Claude"')
 
 size=$(echo "$input" | jq -r '.context_window.context_window_size // 200000')
@@ -141,9 +214,6 @@ input_tokens=$(echo "$input" | jq -r '.context_window.current_usage.input_tokens
 cache_create=$(echo "$input" | jq -r '.context_window.current_usage.cache_creation_input_tokens // 0')
 cache_read=$(echo "$input" | jq -r '.context_window.current_usage.cache_read_input_tokens // 0')
 current=$(( input_tokens + cache_create + cache_read ))
-
-used_tokens=$(format_tokens $current)
-total_tokens=$(format_tokens $size)
 
 if [ "$size" -gt 0 ]; then
     pct_used=$(( current * 100 / size ))
@@ -158,7 +228,7 @@ if [ -f "$settings_path" ]; then
     [ "$thinking_val" = "true" ] && thinking_on=true
 fi
 
-# ── LINE 1: Model │ Context % │ Directory (branch) │ Session │ Thinking ──
+# Line 1
 pct_color=$(color_for_pct "$pct_used")
 cwd=$(echo "$input" | jq -r '.cwd // ""')
 [ -z "$cwd" ] || [ "$cwd" = "null" ] && cwd=$(pwd)
@@ -262,7 +332,7 @@ if [ "$show_cli_version" = "true" ]; then
     fi
 fi
 
-# ── OAuth token resolution ──────────────────────────────
+# OAuth token resolution
 get_oauth_token() {
     local token=""
 
@@ -307,7 +377,7 @@ get_oauth_token() {
     echo ""
 }
 
-# ── Fetch usage data (cached) ──────────────────────────
+# Fetch usage data
 cache_file="/tmp/claude/statusline-usage-cache.json"
 mkdir -p /tmp/claude
 
@@ -343,10 +413,11 @@ if $needs_refresh; then
     fi
     if [ -z "$usage_data" ] && [ -f "$cache_file" ]; then
         usage_data=$(cat "$cache_file" 2>/dev/null)
+        cache_is_stale=true
     fi
 fi
 
-# ── Rate limit lines ────────────────────────────────────
+# Rate limit lines
 rate_lines=""
 
 if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
@@ -394,7 +465,16 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     fi
 fi
 
-# ── Output ──────────────────────────────────────────────
+if [ "$show_api_status" = "true" ] && [ -n "$usage_data" ]; then
+    usage_status=""
+    if $cache_is_stale; then
+        usage_status="${orange}api: stale${reset}"
+    else
+        usage_status="${green}api: live${reset}"
+    fi
+    line1+="${sep}${usage_status}"
+fi
+
 printf "%b" "$line1"
 [ -n "$rate_lines" ] && printf "\n\n%b" "$rate_lines"
 
