@@ -8,6 +8,7 @@ const CLAUDE_DIR = path.join(os.homedir(), ".claude");
 const SETTINGS_FILE = path.join(CLAUDE_DIR, "settings.json");
 const STATUSLINE_DEST = path.join(CLAUDE_DIR, "statusline.sh");
 const STATUSLINE_SRC = path.resolve(__dirname, "statusline.sh");
+const isWindows = process.platform === "win32";
 
 const blue = "\x1b[38;2;0;153;255m";
 const green = "\x1b[38;2;0;175;80m";
@@ -35,26 +36,41 @@ function fail(msg) {
 function checkDeps() {
   const { execSync } = require("child_process");
   const missing = [];
+  const commandExists = (command) => {
+    const lookupCommand = isWindows ? `where ${command}` : `which ${command}`;
+    try {
+      execSync(lookupCommand, { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
-  try {
-    execSync("which jq", { stdio: "ignore" });
-  } catch {
+  if (!commandExists("jq")) {
     missing.push("jq");
   }
 
-  try {
-    execSync("which curl", { stdio: "ignore" });
-  } catch {
+  if (!commandExists("curl")) {
     missing.push("curl");
   }
 
-  try {
-    execSync("which git", { stdio: "ignore" });
-  } catch {
+  if (!commandExists("git")) {
     missing.push("git");
   }
 
+  if (isWindows && !commandExists("bash")) {
+    missing.push("bash");
+  }
+
   return missing;
+}
+
+function getStatusLineCommand() {
+  if (isWindows) {
+    return 'bash "$USERPROFILE/.claude/statusline.sh"';
+  }
+
+  return 'bash "$HOME/.claude/statusline.sh"';
 }
 
 function uninstall() {
@@ -108,16 +124,20 @@ function run() {
   console.log(`  ${dim}─────────────────────${reset}`);
   console.log();
 
+  const requiredDeps = ["jq", "curl", "git", ...(isWindows ? ["bash"] : [])];
   const missing = checkDeps();
   if (missing.length > 0) {
     fail(`Missing required dependencies: ${missing.join(", ")}`);
     log(`  Install them and try again.`);
     if (missing.includes("jq")) {
-      log(`  ${dim}brew install jq${reset}`);
+      log(isWindows ? `  ${dim}winget install -e --id jqlang.jq${reset}` : `  ${dim}brew install jq${reset}`);
+    }
+    if (isWindows && missing.includes("bash")) {
+      log(`  ${dim}winget install -e --id Git.Git${reset}`);
     }
     process.exit(1);
   }
-  success("Dependencies found (jq, curl, git)");
+  success(`Dependencies found (${requiredDeps.join(", ")})`);
 
   if (!fs.existsSync(CLAUDE_DIR)) {
     fs.mkdirSync(CLAUDE_DIR, { recursive: true });
@@ -144,9 +164,10 @@ function run() {
     }
   }
 
+  const command = getStatusLineCommand();
   const statusLineConfig = {
     type: "command",
-    command: 'bash "$HOME/.claude/statusline.sh"',
+    command,
   };
 
   if (
