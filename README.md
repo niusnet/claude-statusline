@@ -18,18 +18,21 @@ It backups your old status line if any and copies the status line script to `~/.
 
 - Git ahead/behind indicators (`↑`/`↓`) when your branch has an upstream
 - Claude Code version indicator (`cc x.y.z`) and update hint (`⇪ x.y.z`) when a newer npm release is detected
-- API freshness status (`api: live` / `api: stale`) for usage data
+- API freshness status (`api: live` / `api: stale` / `api: rate limited`) for usage data
 - Relative reset times (e.g. `in 1h 20m`) next to absolute reset times
+- Context current/remaining indicator and `autocompact pronto` warning when usage is high
 
 ## Optional environment variables
 
-Tune thresholds and cache behavior:
+Tune thresholds, cache behavior, and rate-limit backoff:
 
 ```bash
 export CLAUDE_STATUSLINE_CONTEXT_WARN_PCT=50
 export CLAUDE_STATUSLINE_CONTEXT_MID_PCT=70
 export CLAUDE_STATUSLINE_CONTEXT_CRIT_PCT=90
-export CLAUDE_STATUSLINE_CACHE_MAX_AGE=60
+export CLAUDE_STATUSLINE_AUTOCOMPACT_WARN_PCT=85
+export CLAUDE_STATUSLINE_CACHE_MAX_AGE=180
+export CLAUDE_STATUSLINE_RATE_LIMIT_BACKOFF=900
 export CLAUDE_STATUSLINE_SHOW_API_STATUS=false
 export CLAUDE_STATUSLINE_SHOW_CLI_VERSION=true
 export CLAUDE_STATUSLINE_CHECK_UPDATES=true
@@ -39,6 +42,10 @@ export CLAUDE_STATUSLINE_UPDATE_CACHE_MAX_AGE=43200
 Notes:
 
 - `CLAUDE_STATUSLINE_SHOW_API_STATUS` is off by default to avoid confusion in plans where API freshness is not useful.
+- `CLAUDE_STATUSLINE_RATE_LIMIT_BACKOFF` sets the fallback cooldown (in seconds) after the API returns `rate_limit_error`.
+- `CLAUDE_STATUSLINE_CACHE_MAX_AGE` defaults to `180` seconds to reduce usage API polling and avoid frequent rate-limit hits.
+- `CLAUDE_STATUSLINE_AUTOCOMPACT_WARN_PCT` controls when to show `⚠ autocompact pronto` based on context usage.
+- The statusline prefers server-provided retry hints (`Retry-After`, then `X-RateLimit-Reset`) before using the fallback.
 - Update checks query npm and are cached (12h by default).
 
 ## Requirements

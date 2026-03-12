@@ -26,7 +26,9 @@ sep=" ${dim}│${reset} "
 context_warn_pct=${CLAUDE_STATUSLINE_CONTEXT_WARN_PCT:-50}
 context_mid_pct=${CLAUDE_STATUSLINE_CONTEXT_MID_PCT:-70}
 context_crit_pct=${CLAUDE_STATUSLINE_CONTEXT_CRIT_PCT:-90}
-cache_max_age=${CLAUDE_STATUSLINE_CACHE_MAX_AGE:-60}
+autocompact_warn_pct=${CLAUDE_STATUSLINE_AUTOCOMPACT_WARN_PCT:-85}
+cache_max_age=${CLAUDE_STATUSLINE_CACHE_MAX_AGE:-180}
+rate_limit_backoff=${CLAUDE_STATUSLINE_RATE_LIMIT_BACKOFF:-900}
 show_api_status=${CLAUDE_STATUSLINE_SHOW_API_STATUS:-false}
 show_cli_version=${CLAUDE_STATUSLINE_SHOW_CLI_VERSION:-true}
 check_cli_updates=${CLAUDE_STATUSLINE_CHECK_UPDATES:-true}
@@ -125,6 +127,50 @@ format_reset_time() {
     esac
 }
 
+
+http_date_to_epoch() {
+    local value="$1"
+    local epoch=""
+
+    epoch=$(date -d "$value" +%s 2>/dev/null)
+    if [ -n "$epoch" ]; then
+        echo "$epoch"
+        return 0
+    fi
+
+    epoch=$(env TZ=UTC date -j -f "%a, %d %b %Y %H:%M:%S %Z" "$value" +%s 2>/dev/null)
+    if [ -n "$epoch" ]; then
+        echo "$epoch"
+        return 0
+    fi
+
+    return 1
+}
+
+retry_after_to_seconds() {
+    local value="$1"
+
+    if [ -z "$value" ]; then
+        return 1
+    fi
+
+    if [ "$value" -gt 0 ] 2>/dev/null; then
+        echo "$value"
+        return 0
+    fi
+
+    local retry_epoch now
+    retry_epoch=$(http_date_to_epoch "$value")
+    if [ -n "$retry_epoch" ]; then
+        now=$(date +%s)
+        if [ "$retry_epoch" -gt "$now" ] 2>/dev/null; then
+            echo "$(( retry_epoch - now ))"
+            return 0
+        fi
+    fi
+
+    return 1
+}
 format_relative_time() {
     local epoch="$1"
     [ -z "$epoch" ] && return
@@ -221,6 +267,18 @@ else
     pct_used=0
 fi
 
+remaining_tokens=$(( size - current ))
+if [ "$remaining_tokens" -lt 0 ] 2>/dev/null; then
+    remaining_tokens=0
+fi
+remaining_fmt=$(format_tokens "$remaining_tokens")
+current_fmt=$(format_tokens "$current")
+size_fmt=$(format_tokens "$size")
+autocompact_soon=false
+if [ "$pct_used" -ge "$autocompact_warn_pct" ] 2>/dev/null; then
+    autocompact_soon=true
+fi
+
 thinking_on=false
 settings_path="$HOME/.claude/settings.json"
 if [ -f "$settings_path" ]; then
@@ -276,6 +334,12 @@ fi
 line1="${blue}${model_name}${reset}"
 line1+="${sep}"
 line1+="✍️ ${pct_color}${pct_used}%${reset}"
+line1+=" ${dim}(${current_fmt}/${size_fmt})${reset}"
+line1+="${sep}"
+line1+="${white}left ${remaining_fmt}${reset}"
+if $autocompact_soon; then
+    line1+=" ${red}⚠ autocompact pronto${reset}"
+fi
 line1+="${sep}"
 line1+="${cyan}${dirname}${reset}"
 if [ -n "$git_branch" ]; then
@@ -379,11 +443,25 @@ get_oauth_token() {
 
 # Fetch usage data
 cache_file="/tmp/claude/statusline-usage-cache.json"
+rate_limit_file="/tmp/claude/statusline-rate-limit-until"
 mkdir -p /tmp/claude
 
 needs_refresh=true
 usage_data=""
 cache_is_stale=false
+rate_limited=false
+
+rate_limit_until=""
+rate_limit_rel=""
+if [ -f "$rate_limit_file" ]; then
+    now=$(date +%s)
+    rate_limit_until=$(cat "$rate_limit_file" 2>/dev/null)
+    if [ -n "$rate_limit_until" ] && [ "$rate_limit_until" -gt "$now" ] 2>/dev/null; then
+        needs_refresh=false
+        rate_limited=true
+        rate_limit_rel=$(format_relative_time "$rate_limit_until")
+    fi
+fi
 
 if [ -f "$cache_file" ]; then
     cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
@@ -399,7 +477,9 @@ fi
 if $needs_refresh; then
     token=$(get_oauth_token)
     if [ -n "$token" ] && [ "$token" != "null" ]; then
+        response_headers=$(mktemp)
         response=$(curl -s --max-time 5 \
+            -D "$response_headers" \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $token" \
@@ -409,7 +489,29 @@ if $needs_refresh; then
         if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
             usage_data="$response"
             echo "$response" > "$cache_file"
+            rm -f "$rate_limit_file"
+        elif [ -n "$response" ] && [ "$(echo "$response" | jq -r '.error.type // empty' 2>/dev/null)" = "rate_limit_error" ]; then
+            retry_after_raw=$(awk 'BEGIN{IGNORECASE=1} /^Retry-After:/ {line=$0; sub(/^[^:]*:[[:space:]]*/, "", line); gsub("\r", "", line); print line}' "$response_headers" | tail -n1)
+            backoff_seconds=$(retry_after_to_seconds "$retry_after_raw")
+
+            if [ -z "$backoff_seconds" ]; then
+                rate_limit_reset=$(awk 'BEGIN{IGNORECASE=1} /^X-RateLimit-Reset:/ {gsub("\r", "", $2); print $2}' "$response_headers" | tail -n1)
+                now=$(date +%s)
+                if [ -n "$rate_limit_reset" ] && [ "$rate_limit_reset" -gt "$now" ] 2>/dev/null; then
+                    backoff_seconds="$(( rate_limit_reset - now ))"
+                fi
+            fi
+
+            if [ -z "$backoff_seconds" ] || [ "$backoff_seconds" -le 0 ] 2>/dev/null; then
+                backoff_seconds="$rate_limit_backoff"
+            fi
+            now=$(date +%s)
+            rate_limit_until="$(( now + backoff_seconds ))"
+            echo "$rate_limit_until" > "$rate_limit_file"
+            rate_limited=true
+            rate_limit_rel=$(format_relative_time "$rate_limit_until")
         fi
+        rm -f "$response_headers"
     fi
     if [ -z "$usage_data" ] && [ -f "$cache_file" ]; then
         usage_data=$(cat "$cache_file" 2>/dev/null)
@@ -465,9 +567,16 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     fi
 fi
 
-if [ "$show_api_status" = "true" ] && [ -n "$usage_data" ]; then
+if [ "$show_api_status" = "true" ]; then
     usage_status=""
-    if $cache_is_stale; then
+    if $rate_limited; then
+        usage_status="${yellow}api: rate limited${reset}"
+        if [ -n "$rate_limit_rel" ]; then
+            usage_status+=" ${dim}(${rate_limit_rel})${reset}"
+        fi
+    elif [ -z "$usage_data" ]; then
+        usage_status="${dim}api: unavailable${reset}"
+    elif $cache_is_stale; then
         usage_status="${orange}api: stale${reset}"
     else
         usage_status="${green}api: live${reset}"
