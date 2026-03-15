@@ -31,7 +31,7 @@ export CLAUDE_STATUSLINE_CONTEXT_WARN_PCT=50
 export CLAUDE_STATUSLINE_CONTEXT_MID_PCT=70
 export CLAUDE_STATUSLINE_CONTEXT_CRIT_PCT=90
 export CLAUDE_STATUSLINE_AUTOCOMPACT_WARN_PCT=85
-export CLAUDE_STATUSLINE_CACHE_MAX_AGE=180
+export CLAUDE_STATUSLINE_CACHE_MAX_AGE=300
 export CLAUDE_STATUSLINE_RATE_LIMIT_BACKOFF=900
 export CLAUDE_STATUSLINE_SHOW_API_STATUS=false
 export CLAUDE_STATUSLINE_SHOW_CLI_VERSION=true
@@ -43,7 +43,7 @@ Notes:
 
 - `CLAUDE_STATUSLINE_SHOW_API_STATUS` is off by default to avoid confusion in plans where API freshness is not useful.
 - `CLAUDE_STATUSLINE_RATE_LIMIT_BACKOFF` sets the fallback cooldown (in seconds) after the API returns `rate_limit_error`.
-- `CLAUDE_STATUSLINE_CACHE_MAX_AGE` defaults to `180` seconds to reduce usage API polling and avoid frequent rate-limit hits.
+- `CLAUDE_STATUSLINE_CACHE_MAX_AGE` defaults to `300` seconds to reduce usage API polling and avoid frequent rate-limit hits.
 - `CLAUDE_STATUSLINE_AUTOCOMPACT_WARN_PCT` controls when to show `⚠ autocompact pronto` based on context usage.
 - The statusline prefers server-provided retry hints (`Retry-After`, then `X-RateLimit-Reset`) before using the fallback.
 - Update checks query npm and are cached (12h by default).
