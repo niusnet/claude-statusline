@@ -27,12 +27,17 @@ context_warn_pct=${CLAUDE_STATUSLINE_CONTEXT_WARN_PCT:-50}
 context_mid_pct=${CLAUDE_STATUSLINE_CONTEXT_MID_PCT:-70}
 context_crit_pct=${CLAUDE_STATUSLINE_CONTEXT_CRIT_PCT:-90}
 autocompact_warn_pct=${CLAUDE_STATUSLINE_AUTOCOMPACT_WARN_PCT:-85}
-cache_max_age=${CLAUDE_STATUSLINE_CACHE_MAX_AGE:-180}
+cache_max_age=${CLAUDE_STATUSLINE_CACHE_MAX_AGE:-300}
 rate_limit_backoff=${CLAUDE_STATUSLINE_RATE_LIMIT_BACKOFF:-900}
 show_api_status=${CLAUDE_STATUSLINE_SHOW_API_STATUS:-false}
 show_cli_version=${CLAUDE_STATUSLINE_SHOW_CLI_VERSION:-true}
 check_cli_updates=${CLAUDE_STATUSLINE_CHECK_UPDATES:-true}
 cli_update_check_max_age=${CLAUDE_STATUSLINE_UPDATE_CACHE_MAX_AGE:-43200}
+
+# Cache directory — prefer ~/.claude/cache/, fall back to /tmp/claude/
+_cache_dir="$HOME/.claude/cache"
+mkdir -p "$_cache_dir" 2>/dev/null || _cache_dir="/tmp/claude"
+mkdir -p "$_cache_dir" 2>/dev/null
 
 # Helpers
 format_tokens() {
@@ -380,8 +385,7 @@ if [ "$show_cli_version" = "true" ]; then
         line1+="${sep}${white}cc ${cli_version}${reset}"
 
         if [ "$check_cli_updates" = "true" ]; then
-            version_cache_file="/tmp/claude/statusline-version-cache.json"
-            mkdir -p /tmp/claude
+            version_cache_file="$_cache_dir/statusline-version-cache.json"
 
             latest_version=""
             if [ -f "$version_cache_file" ]; then
@@ -454,9 +458,8 @@ get_oauth_token() {
 }
 
 # Fetch usage data
-cache_file="/tmp/claude/statusline-usage-cache.json"
-rate_limit_file="/tmp/claude/statusline-rate-limit-until"
-mkdir -p /tmp/claude
+cache_file="$_cache_dir/statusline-usage-cache.json"
+rate_limit_file="$_cache_dir/statusline-rate-limit-until"
 
 needs_refresh=true
 usage_data=""
