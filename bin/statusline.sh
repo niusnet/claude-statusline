@@ -257,8 +257,16 @@ get_latest_claude_code_version() {
 # Extract JSON data
 model_name=$(echo "$input" | jq -r '.model.display_name // "Claude"' | sed 's/^Claude //')
 
-size=$(echo "$input" | jq -r '.context_window.context_window_size // 200000')
-[ "$size" -eq 0 ] 2>/dev/null && size=200000
+size=$(echo "$input" | jq -r '.context_window.context_window_size // 0')
+if [ "$size" -eq 0 ] 2>/dev/null; then
+    if [[ "$model_name" == *"Sonnet"* && "$model_name" == *"4.6"* ]]; then
+        size=1000000
+    elif [[ "$model_name" == *"Opus"* && "$model_name" == *"4.6"* ]]; then
+        size=1000000
+    else
+        size=200000
+    fi
+fi
 
 input_tokens=$(echo "$input" | jq -r '.context_window.current_usage.input_tokens // 0')
 cache_create=$(echo "$input" | jq -r '.context_window.current_usage.cache_creation_input_tokens // 0')
