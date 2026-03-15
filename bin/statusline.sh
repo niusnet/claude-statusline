@@ -38,7 +38,11 @@ cli_update_check_max_age=${CLAUDE_STATUSLINE_UPDATE_CACHE_MAX_AGE:-43200}
 format_tokens() {
     local num=$1
     if [ "$num" -ge 1000000 ]; then
-        awk "BEGIN {printf \"%.1fm\", $num / 1000000}"
+        if [ $(( num % 1000000 )) -eq 0 ]; then
+            awk "BEGIN {printf \"%dM\", $num / 1000000}"
+        else
+            awk "BEGIN {printf \"%.1fM\", $num / 1000000}"
+        fi
     elif [ "$num" -ge 1000 ]; then
         awk "BEGIN {printf \"%.0fk\", $num / 1000}"
     else
